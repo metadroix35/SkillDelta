@@ -1,35 +1,20 @@
-import smtplib
 import os
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.image import MIMEImage
+import base64
+import requests
 from skillrot_app.core.config import settings
 
 
-EMAIL_ADDRESS = settings.EMAIL_ADDRESS
-EMAIL_PASSWORD = settings.EMAIL_PASSWORD
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+FROM_EMAIL = settings.EMAIL_ADDRESS
 
 
 def send_email(to_email: str, subject: str, html_body: str) -> bool:
     try:
-        if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
-            print("Email credentials not configured.")
+        if not SENDGRID_API_KEY:
+            print("SendGrid API key missing.")
             return False
 
-        # 🔥 Create main message container
-        msg = MIMEMultipart("related")
-        msg["From"] = f"SkillDelta Alerts <{EMAIL_ADDRESS}>"
-        msg["To"] = to_email
-        msg["Subject"] = subject
-        msg["Reply-To"] = EMAIL_ADDRESS
-
-        # 🔥 Alternative part (HTML)
-        msg_alternative = MIMEMultipart("alternative")
-        msg.attach(msg_alternative)
-
-        msg_alternative.attach(MIMEText(html_body, "html"))
-
-        # 🔥 Attach logo inline (if exists)
+        # Attach logo as base64
         logo_path = os.path.abspath(
             os.path.join(
                 os.path.dirname(__file__),
@@ -39,32 +24,56 @@ def send_email(to_email: str, subject: str, html_body: str) -> bool:
             )
         )
 
+        attachments = []
+
         if os.path.exists(logo_path):
             with open(logo_path, "rb") as f:
-                logo = MIMEImage(f.read())
-                logo.add_header("Content-ID", "<skilldelta_logo>")
-                logo.add_header(
-                    "Content-Disposition",
-                    "inline",
-                    filename="skilldelta_logo.png"
-                )
-                msg.attach(logo)
+                encoded_logo = base64.b64encode(f.read()).decode()
+
+            attachments.append({
+                "content": encoded_logo,
+                "type": "image/png",
+                "filename": "skilldelta_logo.png",
+                "disposition": "inline",
+                "content_id": "skilldelta_logo"
+            })
+
+        data = {
+            "personalizations": [
+                {
+                    "to": [{"email": to_email}],
+                    "subject": subject
+                }
+            ],
+            "from": {
+                "email": FROM_EMAIL,
+                "name": "SkillDelta Alerts"
+            },
+            "content": [
+                {
+                    "type": "text/html",
+                    "value": html_body
+                }
+            ],
+            "attachments": attachments
+        }
+
+        response = requests.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            headers={
+                "Authorization": f"Bearer {SENDGRID_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json=data
+        )
+
+        if response.status_code in [200, 202]:
+            print("SkillDelta Email sent via SendGrid.")
+            return True
         else:
-            print("Logo file not found at:", logo_path)
-
-        # 🔥 Use TLS (587) — Render friendly
-        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=30)
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
-
-        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-        server.sendmail(EMAIL_ADDRESS, to_email, msg.as_string())
-        server.quit()
-
-        print("SkillDelta Email sent successfully.")
-        return True
+            print("SendGrid Error:", response.text)
+            return False
 
     except Exception as e:
-        print("SkillDelta Email Error:", str(e))
+        print("SendGrid Exception:", str(e))
         return False
